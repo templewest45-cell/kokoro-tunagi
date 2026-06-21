@@ -1,0 +1,16 @@
+{
+  "name": "こころつなぎ",
+  "short_name": "こころ",
+  "description": "感情をつないで遊ぶカードゲーム",
+  "start_url": "./index.html",
+  "display": "fullscreen",
+  "background_color": "#f8fafc",
+  "theme_color": "#65a34e",
+  "icons": [
+    {
+      "src": "icon.png",
+      "sizes": "1024x1024",
+      "type": "image/png"
+    }
+  ]
+}
