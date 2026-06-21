@@ -10,7 +10,7 @@
   <link rel="apple-touch-icon" href="icon.png">
   <link rel="manifest" href="manifest.json">
   <title>こころつなぎ</title>
-  <script src="/socket.io/socket.io.js"></script>
+  <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.1/build/qrcode.min.js"></script>
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;900&family=M+PLUS+Rounded+1c:wght@400;700;900&display=swap');
@@ -436,70 +436,75 @@
 <script>
 
 // --- Multiplayer State ---
-let socket = null;
+let peer = null;
+let hostConnections = [];
+let myConnection = null;
 let isMultiplayer = false;
 let isHost = false;
 let myRoomCode = '';
 
-if (typeof io !== 'undefined') {
-  socket = io();
+function handleNetworkData(payload, conn) {
+  const type = payload.type;
+  const data = payload.data;
   
-  socket.on('playerJoined', (data) => {
-    if (isHost) {
-      players.push({ id: data.id, name: data.name, hand: [], isCpu: false, avatar: data.avatar || avatarList[0] });
+  if (isHost) {
+    if (type === 'joinRoom') {
+      players.push({ id: data.peerId, name: data.name, hand: [], isCpu: false, avatar: data.avatar || avatarList[0] });
+      hostConnections.push(conn);
+      
       const list = document.getElementById('host-players-list');
       const div = document.createElement('div');
       div.style.display = "flex"; div.style.alignItems = "center"; div.style.justifyContent = "center"; div.style.gap = "0.5rem";
       div.innerHTML = `<img src="${data.avatar || avatarList[0]}" style="width:32px; height:32px; border-radius:50%; object-fit:cover;"> ${data.name} が参加しました`;
       list.appendChild(div);
       showToast(`👤 ${data.name} が参加しました！`);
+      
+    } else if (type === 'remotePlayCard') {
+      if (turnIndex === data.playerIdx) playCard(data.playerIdx, data.cardIdx);
+    } else if (type === 'remoteDrawCard') {
+      if (turnIndex === data.playerIdx) drawCardPlayer();
+    } else if (type === 'remotePassTurn') {
+      if (turnIndex === data.playerIdx) passTurn();
+    } else if (type === 'remoteColorSelect') {
+      if (turnIndex === data.playerIdx) selectColor(data.color);
     }
-  });
-
-  socket.on('gameStateUpdate', (state) => {
-    if (!isHost) {
-      turnIndex = state.turnIndex;
-      playDirection = state.playDirection;
-      discardPile = state.discardPile;
-      players = state.players;
-      hasDrawnThisTurn = state.hasDrawnThisTurn;
+  } else {
+    // Client
+    if (type === 'gameStateUpdate') {
+      turnIndex = data.turnIndex;
+      playDirection = data.playDirection;
+      discardPile = data.discardPile;
+      players = data.players;
+      hasDrawnThisTurn = data.hasDrawnThisTurn;
+      
+      document.getElementById('screen-lobby-join').style.display = 'none';
+      document.getElementById('screen-game').style.display = 'flex';
       renderBoardClient();
+    } else if (type === 'gameEnd') {
+      endGame(data);
     }
-  });
-  
-  socket.on('remotePlayCard', (data) => {
-    if (isHost && turnIndex === data.playerIdx) playCard(data.playerIdx, data.cardIdx);
-  });
-  
-  socket.on('remoteDrawCard', (data) => {
-    if (isHost && turnIndex === data.playerIdx) drawCardPlayer();
-  });
-  
-  socket.on('remotePassTurn', (data) => {
-    if (isHost && turnIndex === data.playerIdx) passTurn();
-  });
-  
-  socket.on('remoteColorSelect', (data) => {
-    if (isHost && turnIndex === data.playerIdx) selectColor(data.color);
-  });
-  
-  socket.on('gameEnd', (winner) => {
-    if (!isHost) endGame(winner);
-  });
+  }
 }
 
 function openHostLobby() {
   document.getElementById('screen-menu').style.display = 'none';
-  document.getElementById('screen-lobby-host').style.display = 'flex'; document.getElementById('user-profile-btn').style.display = 'none';
+  document.getElementById('screen-lobby-host').style.display = 'flex';
   document.getElementById('screen-lobby-join').style.display = 'none';
   document.getElementById('screen-game').style.display = 'none';
+  document.getElementById('user-profile-btn').style.display = 'none';
   
   isMultiplayer = true;
   isHost = true;
   myRoomCode = Math.floor(1000 + Math.random() * 9000).toString();
   document.getElementById('room-pin').innerText = myRoomCode;
   
-  if(socket) socket.emit('createRoom', myRoomCode);
+  if (peer) peer.destroy();
+  peer = new Peer('kokoro-host-' + myRoomCode);
+  hostConnections = [];
+  
+  peer.on('connection', (conn) => {
+    conn.on('data', (data) => handleNetworkData(data, conn));
+  });
   
   const currentUrl = new URL(window.location.href);
   currentUrl.searchParams.set('room', myRoomCode);
@@ -514,8 +519,9 @@ function openHostLobby() {
 function openJoinLobby() {
   document.getElementById('screen-menu').style.display = 'none';
   document.getElementById('screen-lobby-host').style.display = 'none';
-  document.getElementById('screen-lobby-join').style.display = 'flex'; document.getElementById('user-profile-btn').style.display = 'none';
+  document.getElementById('screen-lobby-join').style.display = 'flex';
   document.getElementById('screen-game').style.display = 'none';
+  document.getElementById('user-profile-btn').style.display = 'none';
   
   isMultiplayer = true;
   isHost = false;
@@ -533,19 +539,24 @@ function joinRoom() {
   if (pin.length < 4) return alert('4ケタの数字を入れてね');
   
   myRoomCode = pin;
-  if(socket) socket.emit('joinRoom', pin, { name: name, avatar: userProfile.avatar });
-  document.getElementById('join-status').innerText = '⏳ ホストがゲームを始めるのを待っています...';
+  document.getElementById('join-status').innerText = '⏳ ホストに接続しています...';
   
-  // Actually wait for gameStateUpdate to show game screen
-  socket.once('gameStateUpdate', () => {
-    document.getElementById('screen-lobby-join').style.display = 'none';
-    document.getElementById('screen-game').style.display = 'flex'; document.getElementById('user-profile-btn').style.display = 'none';
+  if (peer) peer.destroy();
+  peer = new Peer();
+  
+  peer.on('open', (id) => {
+    myConnection = peer.connect('kokoro-host-' + pin);
+    myConnection.on('open', () => {
+      myConnection.send({ type: 'joinRoom', data: { name: name, avatar: userProfile.avatar, peerId: id } });
+      document.getElementById('join-status').innerText = '⏳ ホストがゲームを始めるのを待っています...';
+    });
+    myConnection.on('data', (data) => handleNetworkData(data));
   });
 }
 
 function startMultiplayerGame() {
   document.getElementById('screen-lobby-host').style.display = 'none';
-  document.getElementById('screen-game').style.display = 'flex'; document.getElementById('user-profile-btn').style.display = 'none';
+  document.getElementById('screen-game').style.display = 'flex';
   
   while (players.length < 4) {
     const i = players.length;
@@ -577,38 +588,45 @@ function startMultiplayerGame() {
 }
 
 function broadcastState() {
-  if (isMultiplayer && isHost && socket) {
-    socket.emit('relay', myRoomCode, 'gameStateUpdate', {
-      turnIndex, playDirection, discardPile, players, hasDrawnThisTurn
+  if (isMultiplayer && isHost) {
+    const state = { turnIndex, playDirection, discardPile, players, hasDrawnThisTurn };
+    hostConnections.forEach(conn => {
+       if (conn && conn.open) {
+          conn.send({ type: 'gameStateUpdate', data: state });
+       }
     });
   }
 }
 
 window.clientPlayCard = function(idx) {
-  if (turnIndex !== players.findIndex(p => p.id === socket.id)) return;
+  const myId = peer ? peer.id : null;
+  if (turnIndex !== players.findIndex(p => p.id === myId)) return;
   if (window.isProcessingAction) return;
   
   const myHand = players[turnIndex].hand;
   if (!isPlayable(myHand[idx])) return;
   
   window.isProcessingAction = true;
-  socket.emit('relay', myRoomCode, 'remotePlayCard', { playerIdx: turnIndex, cardIdx: idx });
+  if (myConnection && myConnection.open) myConnection.send({ type: 'remotePlayCard', data: { playerIdx: turnIndex, cardIdx: idx } });
 }
 window.clientDrawCard = function() {
-  if (turnIndex !== players.findIndex(p => p.id === socket.id)) return;
-  socket.emit('relay', myRoomCode, 'remoteDrawCard', { playerIdx: turnIndex });
+  const myId = peer ? peer.id : null;
+  if (turnIndex !== players.findIndex(p => p.id === myId)) return;
+  if (myConnection && myConnection.open) myConnection.send({ type: 'remoteDrawCard', data: { playerIdx: turnIndex } });
 }
 window.clientPassTurn = function() {
-  socket.emit('relay', myRoomCode, 'remotePassTurn', { playerIdx: turnIndex });
+  if (myConnection && myConnection.open) myConnection.send({ type: 'remotePassTurn', data: { playerIdx: turnIndex } });
 }
 window.clientSelectColor = function(col) {
   document.getElementById('color-modal').classList.remove('open');
-  socket.emit('relay', myRoomCode, 'remoteColorSelect', { playerIdx: turnIndex, color: col });
+  if (myConnection && myConnection.open) myConnection.send({ type: 'remoteColorSelect', data: { playerIdx: turnIndex, color: col } });
 }
 
 function renderBoardClient() {
+function renderBoardClient() {
   window.isProcessingAction = false;
-  const myIdx = players.findIndex(p => p.id === socket.id);
+  const myId = peer ? peer.id : null;
+  const myIdx = players.findIndex(p => p.id === myId);
   
   const cpuContainer = document.getElementById('cpu-container');
   cpuContainer.innerHTML = '';
@@ -1195,8 +1213,10 @@ function endGame(winner) {
   `;
   
   modal.classList.add('open');
-  if (isMultiplayer && isHost && socket) {
-    socket.emit('relay', myRoomCode, 'gameEnd', winner);
+  if (isMultiplayer && isHost) {
+    hostConnections.forEach(conn => {
+       if (conn && conn.open) conn.send({ type: 'gameEnd', data: winner });
+    });
   }
 }
 </script>
