@@ -683,8 +683,11 @@ function renderBoardClient() {
   document.getElementById('btn-pass').onclick = clientPassTurn;
   document.querySelector('.deck').onclick = clientDrawCard;
   
-  const currentPlayer = players[turnIndex];
-  if(currentPlayer) showTurnIndicator(turnIndex === myIdx ? 'あなたの番！' : `${currentPlayer.name}の番`);
+  if (window.lastTurnIndex !== turnIndex) {
+    const currentPlayer = players[turnIndex];
+    if(currentPlayer) showTurnIndicator(turnIndex === myIdx ? 'あなたの番！' : `${currentPlayer.name}の番`);
+    window.lastTurnIndex = turnIndex;
+  }
   
   if (turnIndex === myIdx && topCard && topCard.action === 'wild' && !topCard.activeColors) {
      document.getElementById('color-modal').classList.add('open');
@@ -1062,7 +1065,7 @@ function startTurn() {
   broadcastState();
   
   const currentPlayer = players[turnIndex];
-  showTurnIndicator(currentPlayer.isCpu ? `${currentPlayer.name}の<ruby>番<rt>ばん</rt></ruby>` : 'あなたの<ruby>番<rt>ばん</rt></ruby>！');
+  showTurnIndicator(turnIndex === 0 ? 'あなたの番！' : `${currentPlayer.name}の番`);
   
   if (currentPlayer.isCpu) {
     setTimeout(playCpuTurn, 2000);
@@ -1188,13 +1191,14 @@ function nextTurn() {
 function endGame(winner) {
   const modal = document.getElementById('result-modal');
   const text = document.getElementById('winner-text');
+  const myId = (isMultiplayer && !isHost) ? (peer ? peer.id : null) : 'player';
   
-  if (winner.isCpu) {
-    text.innerHTML = `${winner.name} の<ruby>勝<rt>か</rt></ruby>ち！`;
-    text.style.color = 'var(--text-main)';
-  } else {
+  if (winner.id === myId) {
     text.innerHTML = '🎉 あなたの<ruby>勝<rt>か</rt></ruby>ち！ 🎉';
     text.style.color = 'var(--gold)';
+  } else {
+    text.innerHTML = `${winner.name} の<ruby>勝<rt>か</rt></ruby>ち！`;
+    text.style.color = 'var(--text-main)';
   }
   
   // Reflection Questions
